@@ -316,3 +316,4 @@ python3 ~/ITI_Files/linux/ota_update/send_update.py \
 ssh root@192.168.50.50 "ip route add 224.0.0.0/4 dev eth0 2>/dev/null || true"
 ```
 
+![image-20260608211405455](assets/image-20260608211405455.png)
