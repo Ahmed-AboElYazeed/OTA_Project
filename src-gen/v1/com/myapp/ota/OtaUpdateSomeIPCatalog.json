@@ -1,0 +1,8 @@
+{
+    "com.myapp.ota.OtaUpdate" : {
+        "service_id": 4353,
+        "instances" : {
+            "com.myapp.ota.OtaUpdate": 1
+        }
+    }
+}

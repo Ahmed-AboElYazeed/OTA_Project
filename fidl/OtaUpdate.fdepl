@@ -1,0 +1,39 @@
+import "platform:/plugin/org.genivi.commonapi.someip/deployment/CommonAPI-4-SOMEIP_deployment_spec.fdepl"
+import "OtaUpdate.fidl"
+
+define org.genivi.commonapi.someip.deployment for interface com.myapp.ota.OtaUpdate {
+
+    SomeIpServiceID = 0x1101
+
+    method AnnounceUpdate {
+        SomeIpMethodID = 0x0001
+        SomeIpReliable = true
+    }
+
+    method SendChunk {
+        SomeIpMethodID = 0x0002
+        SomeIpReliable = true
+    }
+
+    method FinalizeUpdate {
+        SomeIpMethodID = 0x0003
+        SomeIpReliable = true
+    }
+
+    broadcast UpdateStatus {
+        SomeIpEventID       = 0x8001
+        SomeIpEventGroups   = { 0x0001 }
+        SomeIpReliable      = false
+    }
+}
+
+define org.genivi.commonapi.someip.deployment for provider as OtaUpdateProvider {
+
+    instance com.myapp.ota.OtaUpdate {
+        InstanceId                   = "com.myapp.ota.OtaUpdate"
+        SomeIpInstanceID             = 0x0001
+	SomeIpUnicastAddress = "192.168.50.50"
+        SomeIpReliableUnicastPort    = 30510
+        SomeIpUnreliableUnicastPort  = 0
+    }
+}

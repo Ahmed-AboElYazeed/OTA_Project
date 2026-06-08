@@ -1,0 +1,54 @@
+package com.myapp.ota
+
+interface OtaUpdate {
+    version { major 1 minor 0 }
+
+    <** @description: Laptop calls this to announce an available update.
+        RPi responds with a ready/busy status. **>
+    method AnnounceUpdate {
+        in {
+            String  newVersion
+            UInt64  imageSize
+            String  sha256Hash
+        }
+        out {
+            Boolean accepted
+            String  message
+        }
+    }
+
+    <** @description: Laptop sends one chunk at a time.
+        RPi writes it to the inactive partition and returns the next expected offset.
+        If nextOffset == -1 the RPi signals an error. **>
+    method SendChunk {
+        in {
+            UInt64    offset
+            ByteBuffer data
+        }
+        out {
+            Int64  nextOffset
+        }
+    }
+
+    <** @description: Laptop calls this after all chunks are sent.
+        RPi verifies SHA256, rewrites cmdline.txt, and reboots. **>
+    method FinalizeUpdate {
+        in {
+            String sha256Hash
+        }
+        out {
+            Boolean success
+            String  message
+        }
+    }
+
+    <** @description: RPi broadcasts its current update status.
+        Laptop subscribes to monitor progress. **>
+    broadcast UpdateStatus {
+        out {
+            String status
+            UInt32 progressPercent
+            String message
+        }
+    }
+}
