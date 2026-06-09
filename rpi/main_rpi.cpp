@@ -25,7 +25,7 @@ int main() {
     std::cout << "[OTA] Service registered. Waiting for laptop...\n";
 
     while (true)
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        std::this_thread::sleep_for(std::chrono::seconds(120));
 
     return 0;
 }

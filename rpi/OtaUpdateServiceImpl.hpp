@@ -32,21 +32,23 @@ public:
 
 private:
     // Partition and state
-    std::string   targetPartition_;   // /dev/mmcblk0p3
+    std::string   targetPartition_;   // /dev/mmcblk0p3 (or p2)
     std::string   statusFile_;        // /mydata/update-status.json
-    std::string   cmdlinePath_;       // /boot/cmdline.txt
     int           partitionFd_;       // open fd to target partition
     uint64_t      expectedOffset_;    // next expected byte offset
     uint64_t      totalImageSize_;    // set at AnnounceUpdate
     std::string   expectedHash_;      // SHA256 from AnnounceUpdate
-    std::string   newVersion_;            // ← added
+    std::string   newVersion_;        // version string from AnnounceUpdate
+    std::string   activeSlot_;        // current active slot (a or b)
 
-    // Helpers
-    std::string   resolveInactiveSlot();  // ← added
+    // Helpers — U-Boot environment management
+    std::string   resolveInactiveSlot();     // Read active_slot via fw_printenv, return inactive slot
+    std::string   getActiveSlot() const;     // Call fw_printenv to read active_slot
+    bool          setActiveSlot(const std::string &slot);  // Call fw_setenv to set active_slot
     bool          openPartition();
     void          closePartition();
     std::string   computeSHA256();
-    bool          switchBootSlot();
+    bool          switchBootSlot();          // Now uses U-Boot environment (fw_setenv)
     void          updateStatusFile(const std::string &status,
                                    const std::string &version = "");
     void          fireProgress(const std::string &status,

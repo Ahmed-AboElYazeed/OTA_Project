@@ -1,4 +1,4 @@
-#include "OtaUpdateServiceImpl.hpp"
+#include "updateStatusFilehpp"
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mount.h>
@@ -12,9 +12,9 @@
 #include <cstring>
 #include <cerrno>
 #include <vector>
+#include <cstdlib>
 
 static const std::string STATUS_FILE  = "/mydata/update-status.json";
-static const std::string CMDLINE_PATH = "/boot/cmdline.txt";
 static const std::string BOOT_MOUNT   = "/boot";
 static const std::string SLOT_A_DEV   = "/dev/mmcblk0p2";
 static const std::string SLOT_B_DEV   = "/dev/mmcblk0p3";
@@ -23,10 +23,10 @@ static const std::string PENDING_FILE = "/mydata/boot_pending";
 // ── ctor/dtor ──────────────────────────────────────────────────────────────
 OtaUpdateServiceImpl::OtaUpdateServiceImpl()
     : statusFile_(STATUS_FILE)
-    , cmdlinePath_(CMDLINE_PATH)
     , partitionFd_(-1)
     , expectedOffset_(0)
     , totalImageSize_(0)
+    , activeSlot_("")
 {
     targetPartition_ = resolveInactiveSlot();
     std::cout << "[OTA] Inactive slot (write target): "
@@ -37,28 +37,72 @@ OtaUpdateServiceImpl::~OtaUpdateServiceImpl() {
     closePartition();
 }
 
+// ── getActiveSlot ──────────────────────────────────────────────────────────
+// Calls fw_printenv to read the active_slot U-Boot environment variable
+std::string OtaUpdateServiceImpl::getActiveSlot() const {
+    FILE *fp = popen("fw_printenv -n active_slot 2>/dev/null", "r");
+    if (!fp) {
+        std::cerr << "[OTA] popen(fw_printenv) failed\n";
+        return "";
+    }
+    char buffer[16] = {0};
+    if (fgets(buffer, sizeof(buffer), fp) == nullptr) {
+        std::cerr << "[OTA] fw_printenv read failed\n";
+        pclose(fp);
+        return "";
+    }
+    pclose(fp);
+    
+    // Strip newline
+    std::string result(buffer);
+    size_t pos = result.find('\n');
+    if (pos != std::string::npos) {
+        result.erase(pos);
+    }
+    return result;
+}
+
+// ── setActiveSlot ──────────────────────────────────────────────────────────
+// Calls fw_setenv to set the active_slot U-Boot environment variable
+bool OtaUpdateServiceImpl::setActiveSlot(const std::string &slot) {
+    if (slot != "a" && slot != "b") {
+        std::cerr << "[OTA] setActiveSlot: invalid slot '" << slot << "'\n";
+        return false;
+    }
+    
+    std::string cmd = "fw_setenv active_slot " + slot;
+    int ret = ::system(cmd.c_str());
+    if (ret != 0) {
+        std::cerr << "[OTA] fw_setenv failed with code " << ret << "\n";
+        return false;
+    }
+    std::cout << "[OTA] fw_setenv active_slot=" << slot << " succeeded\n";
+    return true;
+}
+
 // ── resolveInactiveSlot ────────────────────────────────────────────────────
+// Read active slot from U-Boot, return the inactive partition
 std::string OtaUpdateServiceImpl::resolveInactiveSlot() {
-    std::ifstream f(CMDLINE_PATH);
-    if (!f) {
-        std::cerr << "[OTA] Cannot read cmdline.txt — defaulting to slot B\n";
+    activeSlot_ = getActiveSlot();
+    
+    if (activeSlot_.empty()) {
+        std::cerr << "[OTA] Could not read active_slot from U-Boot — defaulting to slot B\n";
+        activeSlot_ = "a";  // Assume currently on A if unreadable
         return SLOT_B_DEV;
     }
-    std::string line;
-    std::getline(f, line);
-    f.close();
-
-    if (line.find(SLOT_A_DEV) != std::string::npos) {
-        std::cout << "[OTA] Currently booted from slot A → will write to slot B\n";
+    
+    if (activeSlot_ == "a") {
+        std::cout << "[OTA] Currently booted from slot A → will write to slot B (p3)\n";
         return SLOT_B_DEV;
-    }
-    if (line.find(SLOT_B_DEV) != std::string::npos) {
-        std::cout << "[OTA] Currently booted from slot B → will write to slot A\n";
+    } else if (activeSlot_ == "b") {
+        std::cout << "[OTA] Currently booted from slot B → will write to slot A (p2)\n";
         return SLOT_A_DEV;
+    } else {
+        std::cerr << "[OTA] Unexpected active_slot value: '" << activeSlot_ 
+                  << "' — defaulting to slot B\n";
+        activeSlot_ = "a";
+        return SLOT_B_DEV;
     }
-
-    std::cerr << "[OTA] Cannot determine active slot from cmdline — defaulting to slot B\n";
-    return SLOT_B_DEV;
 }
 
 // ── AnnounceUpdate ─────────────────────────────────────────────────────────
@@ -312,70 +356,54 @@ std::string OtaUpdateServiceImpl::computeSHA256() {
 }
 
 // ── switchBootSlot ─────────────────────────────────────────────────────────
+// U-Boot version: Simply set the active_slot environment variable
+// Much safer and simpler than mounting /boot and rewriting cmdline.txt
 bool OtaUpdateServiceImpl::switchBootSlot() {
-    // Remount /boot read-write
-    if (::mount(nullptr, BOOT_MOUNT.c_str(), nullptr,
-                MS_REMOUNT | MS_NOATIME, nullptr) != 0) {
-        std::cerr << "[OTA] remount /boot rw failed: "
-                  << strerror(errno) << "\n";
-        return false;
-    }
-
-    // Read current cmdline.txt
-    std::ifstream in(cmdlinePath_);
-    if (!in) {
-        std::cerr << "[OTA] Cannot read " << cmdlinePath_ << "\n";
-        ::mount(nullptr, BOOT_MOUNT.c_str(), nullptr,
-                MS_REMOUNT | MS_RDONLY, nullptr);
-        return false;
-    }
-    std::string line;
-    std::getline(in, line);
-    in.close();
-
-    // Replace the root= device
-    auto replaceInLine = [&](const std::string &from, const std::string &to) {
-        size_t pos = line.find(from);
-        if (pos != std::string::npos)
-            line.replace(pos, from.size(), to);
-    };
-
-    if (line.find(SLOT_A_DEV) != std::string::npos) {
-        replaceInLine(SLOT_A_DEV, SLOT_B_DEV);
-        std::cout << "[OTA] cmdline.txt: slot A → B\n";
-    } else if (line.find(SLOT_B_DEV) != std::string::npos) {
-        replaceInLine(SLOT_B_DEV, SLOT_A_DEV);
-        std::cout << "[OTA] cmdline.txt: slot B → A\n";
+    // Determine target slot (opposite of active)
+    std::string targetSlot;
+    if (activeSlot_ == "a") {
+        targetSlot = "b";
+        std::cout << "[OTA] Switching boot slot: A → B\n";
+    } else if (activeSlot_ == "b") {
+        targetSlot = "a";
+        std::cout << "[OTA] Switching boot slot: B → A\n";
     } else {
-        std::cerr << "[OTA] No known root= device in cmdline.txt: "
-                  << line << "\n";
-        ::mount(nullptr, BOOT_MOUNT.c_str(), nullptr,
-                MS_REMOUNT | MS_RDONLY, nullptr);
+        std::cerr << "[OTA] Invalid active_slot: '" << activeSlot_ << "'\n";
         return false;
     }
-
-    // Write back
-    std::ofstream out(cmdlinePath_, std::ios::trunc);
-    if (!out) {
-        std::cerr << "[OTA] Cannot write " << cmdlinePath_ << "\n";
-        ::mount(nullptr, BOOT_MOUNT.c_str(), nullptr,
-                MS_REMOUNT | MS_RDONLY, nullptr);
+    
+    // Use U-Boot fw_setenv to atomically switch the active slot
+    // This is much safer than manually editing cmdline.txt
+    if (!setActiveSlot(targetSlot)) {
+        std::cerr << "[OTA] Failed to set active_slot to '" << targetSlot << "'\n";
         return false;
     }
-    out << line << "\n";
-    out.close();
-
-    // Flush boot partition before remounting ro
+    
+    // Sync filesystem to ensure changes are written
     sync();
-    ::mount(nullptr, BOOT_MOUNT.c_str(), nullptr,
-            MS_REMOUNT | MS_RDONLY, nullptr);
-
+    std::cout << "[OTA] Boot slot switch successful (active_slot=" << targetSlot << ")\n";
     return true;
 }
 
 // ── updateStatusFile ───────────────────────────────────────────────────────
 void OtaUpdateServiceImpl::updateStatusFile(const std::string &status,
                                             const std::string &version) {
+    
+    // Create default JSON if missing
+    std::ifstream test(statusFile_);
+    if (!test) {
+        std::ofstream create(statusFile_);
+        create << "{\n";
+        create << "  \"status\" : \"idle\",\n";
+        create << "  \"active_slot\" : \"a\",\n";
+        create << "  \"version_a\" : \"\",\n";
+        create << "  \"version_b\" : \"\",\n";
+        create << "  \"fallback_reason\" : \"\"\n";
+        create << "}\n";
+        create.close();
+    }
+    test.close();
+    
     std::ifstream in(statusFile_);
     if (!in) {
         std::cerr << "[OTA] Cannot open status file: " << statusFile_ << "\n";
