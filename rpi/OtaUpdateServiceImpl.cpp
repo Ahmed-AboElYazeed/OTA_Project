@@ -175,6 +175,12 @@ void OtaUpdateServiceImpl::FinalizeUpdate(
         _reply(false, "Failed to switch boot slot");
         return;
     }
+    
+    // Mark this as a pending boot so watchdog checks it on next boot
+    std::ofstream pending("/mydata/boot_pending");
+    pending << "pending\n";
+    pending.close();
+    std::cout << "[OTA] Pending flag set\n";
 
     // Pass newVersion_ so version_a or version_b gets updated correctly
     updateStatusFile("complete", newVersion_);
